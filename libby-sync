@@ -2,3 +2,4 @@
 cd "$(dirname "$0")" || exit
 ./dl.py
 ./convert.sh
+./sync.sh
