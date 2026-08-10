@@ -3,7 +3,7 @@
 # requires-python = ">=3.10"
 # dependencies = ["patchright"]
 # ///
-"""Download ACSM files (ebooks) from Libby.
+"""Download ACSM files (ebooks) and MP3 parts (audiobooks) from Libby.
 
 Setup:  uvx patchright install chromium && ./dl.py login
 Usage:  ./dl.py [--dry-run]
@@ -13,12 +13,14 @@ import re
 import sys
 from pathlib import Path
 from typing import NamedTuple
+from urllib.parse import unquote, urlsplit
 
 from patchright.sync_api import Error, sync_playwright
 
 BASE = "https://libbyapp.com"
 PROFILE = Path.home() / ".config/libbydl/profile"
 OUT = Path(__file__).resolve().parent / "acsm"
+AUDIO = OUT.parent / "audio_parts"
 
 TILES_JS = """
 () => [...document.querySelectorAll('.title-tile')].map(t => ({
@@ -72,7 +74,7 @@ def fulfill(page, loan: Loan) -> Path:
     ).filter(has=page.locator(".circ-option-fulfill-loan-drm-badge"))
 
     options.first.wait_for()
-    if not epub.is_visible():  # on some books it's behind "Other Options..."
+    if not epub.is_visible(): # (on some books it's behind "Other Options...")
         more = page.locator(".circ-fulfill-loan-secondary-expando button")
         if not more.count():
             raise Error("no EPUB download available")
@@ -85,8 +87,61 @@ def fulfill(page, loan: Loan) -> Path:
     return dest
 
 
+def part_name(url: str) -> str:
+    return unquote(urlsplit(url).path.rsplit("/", 1)[-1])
+
+
+def page_js(frame, js, arg=None):
+    return frame.evaluate(js, arg, isolated_context=False)
+
+
+def player_frame(page):
+    for _ in range(40):
+        for f in page.frames:
+            try:
+                if page_js(f, "window.BIF?.objects?.compass && window.BIF.objects.spool?.components?.length"):
+                    return f
+            except Error:
+                pass
+        page.wait_for_timeout(500)
+    raise Error("audiobook player not found in: " + ", ".join(f.url for f in page.frames))
+
+
+def listen(page, loan: Loan) -> Path:
+    """Open the player, let it request each MP3 part itself, and save what it requested."""
+    urls = {}
+
+    def note(req):
+        if ".mp3" in req.url:
+            urls[part_name(req.url)] = req.url
+
+    page.on("request", note)
+    page.goto(f"{BASE}/shelf/loans", wait_until="domcontentloaded")
+    page.locator(f".title-tile.data-title_{loan.id}").get_by_text("Open Audiobook").click()
+    player = player_frame(page)
+    resume = page_js(player, "BIF.objects.spool.focus?.floc ?? 0")
+    parts = [unquote(p) for p in page_js(player, "BIF.objects.spool.components.map(c => c.meta.path)")]
+    player.locator("button[aria-label='Play']").click()
+
+    tmp = AUDIO / f".{loan.id}.part"
+    tmp.mkdir(exist_ok=True)
+    for i, name in enumerate(parts):
+        if name not in urls:
+            with page.expect_event("request", lambda r: ".mp3" in r.url and part_name(r.url) == name):
+                page_js(player, "i => BIF.objects.compass.at({floc: i + 0.5}).seek()", i)
+        r = page.request.get(urls[name], timeout=0)
+        if not r.ok:
+            raise Error(f"{name}: HTTP {r.status}")
+        (tmp / f"{i + 1:03}.mp3").write_bytes(r.body())
+    page_js(player, "f => BIF.objects.compass.at({floc: f}).seek()", resume)
+
+    title = re.sub(r"[^\w -]", "", loan.title)
+    return tmp.rename(AUDIO / f"{title}_{loan.id}")
+
+
 KINDS = {
     "book": (fulfill, OUT, "*_{}.acsm"),
+    "audiobook": (listen, AUDIO, "*_{}"),
 }
 
 
@@ -122,9 +177,11 @@ def main() -> int:
 
     PROFILE.mkdir(parents=True, exist_ok=True)
     OUT.mkdir(exist_ok=True)
+    AUDIO.mkdir(exist_ok=True)
     with sync_playwright() as p:
         ctx = p.chromium.launch_persistent_context(
             str(PROFILE), channel="chromium", headless=False, no_viewport=True,
+            args=["--mute-audio"],
         )
         ctx.set_default_timeout(20_000)
         try:
