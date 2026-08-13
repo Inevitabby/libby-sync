@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 cd "$(dirname "$0")" || exit
 ./dl.py
-./convert.sh
+./convert.sh &
+./stitch.sh &
+wait
 ./sync.sh
