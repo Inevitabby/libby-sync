@@ -4,4 +4,4 @@ cd "$(dirname "$0")" || exit
 ./convert.sh &
 ./stitch.sh &
 wait
-./sync.sh
+# ./sync.sh
