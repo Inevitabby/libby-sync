@@ -1,5 +1,15 @@
+# Input/Output Folders
 acsm/
 epub/
 audio_parts/
 audiobooks/
+
+# Input/Output Folders (symlinks)
+acsm
+epub
+audio_parts
+audiobooks
+
+# Misc.
+sync.sh
 knock*
