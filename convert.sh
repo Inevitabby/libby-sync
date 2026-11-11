@@ -5,6 +5,7 @@ if [ -z "${ACSM_CONVERTER:-}" ]; then
 	echo "convert.sh: ACSM_CONVERTER not set, skipping" >&2
 	exit 0
 fi
+ACSM_CONVERTER="$(realpath "$ACSM_CONVERTER")"
 
 mkdir -p epub
 cd acsm || exit 1
